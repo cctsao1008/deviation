@@ -1,0 +1,21 @@
+#ifndef _INTERFACE_H_
+#define _INTERFACE_H_
+
+#define ORDER_EATRG { INP_ELEVATOR, INP_AILERON, INP_THROTTLE, INP_RUDDER, INP_GEAR }
+#define ORDER_TAERG { INP_THROTTLE, INP_AILERON, INP_ELEVATOR, INP_RUDDER, INP_GEAR }
+
+enum ProtoCmds {
+    PROTOCMD_INIT,
+    PROTOCMD_BIND,
+    PROTOCMD_CHECK_AUTOBIND,
+};
+
+#ifdef PROTO_HAS_A7105
+#include "iface_a7105.h"
+#endif
+
+#ifdef PROTO_HAS_CYRF6936
+#include "iface_cyrf6936.h"
+#endif
+
+#endif //_INTERFACE_H_
