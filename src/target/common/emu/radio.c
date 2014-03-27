@@ -17,6 +17,7 @@
 #include "protocol/interface.h"
 #include "config/model.h"
 #include "config/tx.h"
+#include "protocol/iface_nrf24l01.h"
 
 #include <stdlib.h>
 
