@@ -19,6 +19,8 @@
 #include "config/model.h"
 #include "config/ini.h"
 
+#define MAX_CONCURRENT_MSGS 1
+
 #include "../common/_dialogs.c"
 
 static struct dialog_obj * const gui = &gui_objs.dialog;
@@ -31,7 +33,7 @@ static const char *safety_string_cb(guiObject_t *obj, void *data)
     u32 crc = Crc(tempstring, strlen(tempstring));
     if (obj && crc == dialogcrc)
         return tempstring;
-    u64 unsafe = PROTOCOL_CheckSafe();
+    u64 unsafe = PROTOCOL_CheckSafe() & safety_enabled;
     int i;
     int count = 0;
     const s8 safeval[4] = {0, -100, 0, 100};
@@ -49,16 +51,13 @@ static const char *safety_string_cb(guiObject_t *obj, void *data)
         int len = strlen(tempstring);
         snprintf(tempstring + len, sizeof(tempstring) - len, _tr(" is %d%%,\nsafe value = %d%%"),
                 val, safeval[Model.safety[i]]);
-        if (++count >= 5)
+        if (++count >= MAX_CONCURRENT_MSGS)
             break;
     }
     return tempstring;
 }
 void PAGE_ShowSafetyDialog()
 {
-    if (disable_safety) {
-        return; // don't show safety dialog when calibrating
-    }
     if (dialog == NULL) {
         tempstring[0] = 0;
         dialogcrc = 0;
@@ -66,12 +65,13 @@ void PAGE_ShowSafetyDialog()
         dialog = GUI_CreateDialog(&gui->dialog, 2, 5, LCD_WIDTH - 4, LCD_HEIGHT - 10, NULL, safety_string_cb, safety_ok_cb, dtOk, NULL);
         return;
     }
-    u64 unsafe = PROTOCOL_CheckSafe();
+    u64 unsafe = PROTOCOL_CheckSafe() & safety_enabled;
     if (! unsafe) {
+        safety_enabled = ~0LL;
         GUI_RemoveObj(dialog);
         GUI_SetSelected(current_selected_obj);
         dialog = NULL;
-        PROTOCOL_Init(0);
+        PROTOCOL_Init(1);
         return;
     }
     safety_string_cb(NULL, NULL);
