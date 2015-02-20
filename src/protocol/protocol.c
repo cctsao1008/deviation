@@ -24,11 +24,11 @@
 extern struct FAT FontFAT; //defined in screen/lcd_string.c
 
 //Not static because we need it in mixer.c
-const u8 const EATRG[PROTO_MAP_LEN] =
+const u8 EATRG[PROTO_MAP_LEN] =
     { INP_ELEVATOR, INP_AILERON, INP_THROTTLE, INP_RUDDER, INP_GEAR1 };
-static const u8 const TAERG[PROTO_MAP_LEN] = 
+static const u8 TAERG[PROTO_MAP_LEN] = 
     { INP_THROTTLE, INP_AILERON, INP_ELEVATOR, INP_RUDDER, INP_GEAR1 };
-static const u8 const AETRG[PROTO_MAP_LEN] = 
+static const u8 AETRG[PROTO_MAP_LEN] = 
     { INP_AILERON, INP_ELEVATOR, INP_THROTTLE, INP_RUDDER, INP_GEAR1 };
 
 static u8 proto_state;
@@ -369,17 +369,8 @@ int PROTOCOL_SetSwitch(int module)
 #if HAS_MULTIMOD_SUPPORT
     if (! Transmitter.module_enable[MULTIMOD].port)
         return 0;
-    u8 toggle = SPI_ProtoGetPinConfig(module, CSN_PIN);
-    u8 set    = SPI_ProtoGetPinConfig(module, ENABLED_PIN);
-    for (int i = 0; i < MULTIMOD; i++) {
-        if (i == module)
-            continue;
-        set |= SPI_ProtoGetPinConfig(i, DISABLED_PIN);
-        set |= SPI_ProtoGetPinConfig(i, CSN_PIN);
-    }
-    u8 csn_high = toggle | set;
-    u8 csn_low  = ~toggle & set;
-    return SPI_ConfigSwitch(csn_high, csn_low);
+    u8 csn = SPI_ProtoGetPinConfig(module, CSN_PIN);
+    return SPI_ConfigSwitch(0x0f, 0x0f ^ csn);
 #else
     return 0;
 #endif
@@ -445,8 +436,9 @@ void PROTOCOL_InitModules()
         }
     }
     //Put this last because the switch will not respond until after it has been initialized
-    if (PROTOCOL_SetSwitch(TX_MODULE_LAST) == 0) {
+    if (Transmitter.module_enable[MULTIMOD].port && PROTOCOL_SetSwitch(TX_MODULE_LAST) == 0) {
         //No Switch found
+	error = 1;
         missing[MULTIMOD] = MODULE_NAME[MULTIMOD];
     }
     Model.protocol = orig_proto;
