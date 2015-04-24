@@ -98,6 +98,7 @@ static s16 bind_counter;
 static enum PktState state;
 static u8 txState;
 static u8 packet[16];
+static u8 telem_pkt[16];
 static u32 fixed_id;
 static u8 radio_ch[5];
 static u8 *radio_ch_ptr;
@@ -108,14 +109,14 @@ static u8 ch_idx;
 static u8 use_fixed_id;
 static u8 failsafe_pkt;
 
-static void scramble_pkt()
+static void scramble_pkt(u8 *pkt)
 {
 #ifdef NO_SCRAMBLE
     return;
 #else
     u8 i;
     for(i = 0; i < 15; i++) {
-        packet[i + 1] ^= cyrfmfg_id[i % 4];
+        pkt[i + 1] ^= cyrfmfg_id[i % 4];
     }
 #endif
 }
@@ -204,9 +205,9 @@ static void build_data_pkt()
     add_pkt_suffix();
 }
 
-static s32 float_to_int(u8 *ptr)
+static u32 float_to_int(u8 *ptr)
 {
-    s32 value = 0;
+    u32 value = 0;
     int seen_decimal = 0;
     for(int i = 0; i < 7; i++) {
         if(ptr[i] == '.') {
@@ -227,6 +228,14 @@ static s32 float_to_int(u8 *ptr)
     }
     return value;
 }
+static u32 text_to_int(u8 *ptr, u8 len)
+{
+    u32 value = 0;
+    for(int i = 0; i < len; i++) {
+        value = value * 10 + (ptr[i] - '0');
+    }
+    return value;
+}
 static void parse_telemetry_packet(u8 *packet)
 {
     static const u8 voltpkt[] = {
@@ -242,33 +251,30 @@ static void parse_telemetry_packet(u8 *packet)
     static const u8 gpsspeedpkt[] = { TELEM_GPS_SPEED, 0};
     static const u8 gpstimepkt[] = { TELEM_GPS_TIME, 0};
 
-    if((packet[0] & 0xF0) != 0x30)
-        return;
-    const u8 *update = NULL;
-    scramble_pkt(); //This will unscramble the packet
-    if (packet[13] != (fixed_id  & 0xff)
-        || packet[14] != ((fixed_id >> 8) & 0xff)
-        || packet[15] != ((fixed_id >> 16) & 0xff))
-    {
-        return;
-    }
+    const u8 *update = gpslongpkt+1;
+    u32 step = 1;
+    u32 idx = 0;
     //if (packet[0] < 0x37) {
     //    memcpy(Telemetry.line[packet[0]-0x30], packet+1, 12);
     //}
     if (packet[0] == TELEMETRY_ENABLE) {
         update = voltpkt;
-        Telemetry.p.devo.volt[0] = packet[1]; //In 1/10 of Volts
-        Telemetry.p.devo.volt[1] = packet[3]; //In 1/10 of Volts
-        Telemetry.p.devo.volt[2] = packet[5]; //In 1/10 of Volts
-        Telemetry.p.devo.rpm[0]  = packet[7] * 120; //In RPM
-        Telemetry.p.devo.rpm[1]  = packet[9] * 120; //In RPM
+        step = 2;
+        Telemetry.value[TELEM_DEVO_VOLT1] = packet[1]; //In 1/10 of Volts
+        Telemetry.value[TELEM_DEVO_VOLT2] = packet[3]; //In 1/10 of Volts
+        Telemetry.value[TELEM_DEVO_VOLT3] = packet[5]; //In 1/10 of Volts
+        Telemetry.value[TELEM_DEVO_RPM1]  = packet[7] * 120; //In RPM
+        Telemetry.value[TELEM_DEVO_RPM2]  = packet[9] * 120; //In RPM
     }
     if (packet[0] == 0x31) {
         update = temppkt;
-        Telemetry.p.devo.temp[0] = packet[1] == 0xff ? 0 : packet[1] - 20; //In degrees-C
-        Telemetry.p.devo.temp[1] = packet[2] == 0xff ? 0 : packet[2] - 20; //In degrees-C
-        Telemetry.p.devo.temp[2] = packet[3] == 0xff ? 0 : packet[3] - 20; //In degrees-C
-        Telemetry.p.devo.temp[3] = packet[4] == 0xff ? 0 : packet[4] - 20; //In degrees-C
+        while (*update) {
+            Telemetry.value[*update] = packet[++idx];
+            if (packet[idx] != 0xff)
+                TELEMETRY_SetUpdated(*update);
+            update++;
+        }
+        return;
     }
     /* GPS Data
        32: 30333032302e3832373045fb  = 030°20.8270E
@@ -279,19 +285,17 @@ static void parse_telemetry_packet(u8 *packet)
     */
     if (packet[0] == 0x32) {
         update = gpslongpkt;
-        Telemetry.gps.longitude = ((packet[1]-'0') * 100 + (packet[2]-'0') * 10 + (packet[3]-'0')) * 3600000
-                                  + ((packet[4]-'0') * 10 + (packet[5]-'0')) * 60000
-                                  + ((packet[7]-'0') * 1000 + (packet[8]-'0') * 100
-                                     + (packet[9]-'0') * 10 + (packet[10]-'0')) * 6;
+        Telemetry.gps.longitude = text_to_int(packet+1, 3) * 3600000
+                                + text_to_int(packet+4, 2) * 60000
+                                + text_to_int(packet+7, 4) * 6;
         if (packet[11] == 'W')
             Telemetry.gps.longitude *= -1;
     }
     if (packet[0] == 0x33) {
         update = gpslatpkt;
-        Telemetry.gps.latitude = ((packet[1]-'0') * 10 + (packet[2]-'0')) * 3600000
-                                  + ((packet[3]-'0') * 10 + (packet[4]-'0')) * 60000
-                                  + ((packet[6]-'0') * 1000 + (packet[7]-'0') * 100
-                                     + (packet[8]-'0') * 10 + (packet[9]-'0')) * 6;
+        Telemetry.gps.latitude = text_to_int(packet+1, 2) * 3600000
+                               + text_to_int(packet+3, 2) * 60000
+                               + text_to_int(packet+6, 4) * 6;
         if (packet[10] == 'S')
             Telemetry.gps.latitude *= -1;
     }
@@ -305,12 +309,12 @@ static void parse_telemetry_packet(u8 *packet)
     }
     if (packet[0] == 0x36) {
         update = gpstimepkt;
-        u8 hour  = (packet[1]-'0') * 10 + (packet[2]-'0');
-        u8 min   = (packet[3]-'0') * 10 + (packet[4]-'0');
-        u8 sec   = (packet[5]-'0') * 10 + (packet[6]-'0');
-        u8 day   = (packet[7]-'0') * 10 + (packet[8]-'0');
-        u8 month = (packet[9]-'0') * 10 + (packet[10]-'0');
-        u8 year  = (packet[11]-'0') * 10 + (packet[12]-'0'); // + 2000
+        u8 hour  = text_to_int(packet+1, 2);
+        u8 min   = text_to_int(packet+3, 2);
+        u8 sec   = text_to_int(packet+5, 2);
+        u8 day   = text_to_int(packet+7, 2);
+        u8 month = text_to_int(packet+9, 2);
+        u8 year  = text_to_int(packet+11, 2); // + 2000
         Telemetry.gps.time = ((year & 0x3F) << 26)
                            | ((month & 0x0F) << 22)
                            | ((day & 0x1F) << 17)
@@ -318,10 +322,12 @@ static void parse_telemetry_packet(u8 *packet)
                            | ((min & 0x3F) << 6)
                            | ((sec & 0x3F) << 0);
     }
-    if (update) {
-        while(*update) {
-            TELEMETRY_SetUpdated(*update++);
-        }
+    idx = 1;
+    while (*update) {
+        if (packet[idx])
+            TELEMETRY_SetUpdated(*update);
+        update++;
+        idx += step;
     }
 }
 
@@ -390,7 +396,7 @@ void DEVO_BuildPacket()
         case DEVO_BIND_SENDCH:
             bind_counter--;
             build_data_pkt();
-            scramble_pkt();
+            scramble_pkt(packet);
             if (bind_counter <= 0) {
                 state = DEVO_BOUND;
                 PROTOCOL_SetBindState(0);
@@ -409,7 +415,7 @@ void DEVO_BuildPacket()
         case DEVO_BOUND_8:
         case DEVO_BOUND_9:
             build_data_pkt();
-            scramble_pkt();
+            scramble_pkt(packet);
             state++;
             if (bind_counter > 0) {
                 bind_counter--;
@@ -420,7 +426,7 @@ void DEVO_BuildPacket()
         case DEVO_BOUND_10:
             build_beacon_pkt(num_channels > 8 ? failsafe_pkt : 0);
             failsafe_pkt = failsafe_pkt ? 0 : 1;
-            scramble_pkt();
+            scramble_pkt(packet);
             state = DEVO_BOUND_1;
             break;
     }
@@ -429,16 +435,14 @@ void DEVO_BuildPacket()
         pkt_num = 0;
 }
 MODULE_CALLTYPE
-static u16 devo_telemetry_cb()
+static u16 devo_cb()
 {
+    int delay = 100;
     if (txState == 0) {
-        txState = 1;
         DEVO_BuildPacket();
         CYRF_WriteDataPacket(packet);
-        return 900;
-    }
-    int delay = 100;
-    if (txState == 1) {
+        delay = 900;
+    } else if (txState == 1) {
         int i = 0;
         u8 reg;
         while (! ((reg = CYRF_ReadRegister(0x04)) & 0x02)) {
@@ -450,7 +454,7 @@ static u16 devo_telemetry_cb()
             cyrf_init();
             cyrf_set_bound_sop_code();
             CYRF_ConfigRFChannel(*radio_ch_ptr);
-            //printf("Rst CYRF\n");
+            printf("Rst CYRF\n");
             delay = 1500;
             txState = 15;
         } else {
@@ -460,21 +464,38 @@ static u16 devo_telemetry_cb()
                 cyrf_set_bound_sop_code();
             }
             if(pkt_num == 0 || bind_counter > 0) {
+                //Keep tx power updated
+                CYRF_WriteRegister(CYRF_03_TX_CFG, 0x08 | Model.tx_power);
+                radio_ch_ptr = radio_ch_ptr == &radio_ch[2] ? radio_ch : radio_ch_ptr + 1;
+                CYRF_ConfigRFChannel(*radio_ch_ptr);
+            }
+            if (Model.proto_opts[PROTOOPTS_TELEMETRY] == TELEM_ON) {
+                CYRF_SetTxRxMode(RX_EN); //Receive mode
+                CYRF_WriteRegister(CYRF_05_RX_CTRL, 0x80); //Prepare to receive (do not enable any IRQ)
+                delay = 900;
+                txState = 9;
+            } else {
                 delay = 1500;
                 txState = 15;
-            } else {
-                CYRF_SetTxRxMode(RX_EN); //Receive mode
-                CYRF_WriteRegister(CYRF_07_RX_IRQ_STATUS, 0x80); //Prepare to receive
-                CYRF_WriteRegister(CYRF_05_RX_CTRL, 0x80); //Prepare to receive (do not enable any IRQ)
             }
         }
-    } else {
-        int reg = CYRF_ReadRegister(0x07);
-        if ((reg & 0x23) == 0x22)
-        //if(CYRF_ReadRegister(0x07) & 0x20)
-        { // this won't be true in emulator so we need to simulate it somehow
-            CYRF_ReadDataPacket(packet);
-            parse_telemetry_packet(packet);
+    } else if (txState < 15) {
+        //Read telemetry if needed and parse if good
+        u8 rx_state = CYRF_ReadRegister(CYRF_07_RX_IRQ_STATUS);
+        if ((rx_state & 0x02) && !(CYRF_ReadRegister(CYRF_05_RX_CTRL) & 0x80)) {
+            //Receive complete and not currently receiving
+            CYRF_ReadDataPacket(telem_pkt);
+            if ((rx_state & 0x21) == 0x20 && !(CYRF_ReadRegister(CYRF_07_RX_IRQ_STATUS) & 0x01)) {
+                //Receive buffer full with no receive errors and (2nd check) no receive error
+                scramble_pkt(telem_pkt); //This will unscramble the packet
+                if ((telem_pkt[0] & 0xF0) == TELEMETRY_ENABLE
+                 && telem_pkt[13] == (fixed_id  & 0xff)
+                 && telem_pkt[14] == ((fixed_id >> 8) & 0xff)
+                 && telem_pkt[15] == ((fixed_id >> 16) & 0xff))
+                {
+                    parse_telemetry_packet(telem_pkt);
+                }
+            }
             delay = 100 * (16 - txState);
             txState = 15;
         }
@@ -494,44 +515,9 @@ static u16 devo_telemetry_cb()
     txState++;
     if(txState == 16) { //2.3msec have passed
         CYRF_SetTxRxMode(TX_EN); //Write mode
-        if(pkt_num == 0) {
-            //Keep tx power updated
-            CYRF_WriteRegister(CYRF_03_TX_CFG, 0x08 | Model.tx_power);
-            radio_ch_ptr = radio_ch_ptr == &radio_ch[2] ? radio_ch : radio_ch_ptr + 1;
-            CYRF_ConfigRFChannel(*radio_ch_ptr);
-        }
         txState = 0;
     }
     return delay;
-}
-
-MODULE_CALLTYPE
-static u16 devo_cb()
-{
-    if (txState == 0) {
-        txState = 1;
-        DEVO_BuildPacket();
-        CYRF_WriteDataPacket(packet);
-        return 1200;
-    }
-    txState = 0;
-    int i = 0;
-    while (! (CYRF_ReadRegister(0x04) & 0x02)) {
-        if(++i > NUM_WAIT_LOOPS)
-            return 1200;
-    }
-    if (state == DEVO_BOUND) {
-        /* exit binding state */
-        state = DEVO_BOUND_3;
-        cyrf_set_bound_sop_code();
-    }   
-    if(pkt_num == 0) {
-        //Keep tx power updated
-        CYRF_WriteRegister(CYRF_03_TX_CFG, 0x08 | Model.tx_power);
-        radio_ch_ptr = radio_ch_ptr == &radio_ch[2] ? radio_ch : radio_ch_ptr + 1;
-        CYRF_ConfigRFChannel(*radio_ch_ptr);
-    }
-    return 1200;
 }
 
 static void devo_bind()
@@ -557,6 +543,7 @@ static void initialize()
     radio_ch_ptr = radio_ch;
     memset(&Telemetry, 0, sizeof(Telemetry));
     TELEMETRY_SetType(TELEM_DEVO);
+    CYRF_SetTxRxMode(TX_EN);
     /*
     parse_telemetry_packet("203020.8270E\0");
     parse_telemetry_packet("35954.776N\0\0");
@@ -586,11 +573,7 @@ static void initialize()
         bind_counter = 0;
         cyrf_set_bound_sop_code();
     }
-    if (Model.proto_opts[PROTOOPTS_TELEMETRY] == TELEM_ON) {
-        CLOCK_StartTimer(2400, devo_telemetry_cb);
-    } else {
-        CLOCK_StartTimer(2400, devo_cb);
-    }
+    CLOCK_StartTimer(2400, devo_cb);
 }
 
 const void *DEVO_Cmds(enum ProtoCmds cmd)
